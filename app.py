@@ -25,8 +25,11 @@ def compute_entropy(gray: np.ndarray) -> float:
 
 
 def analyze_frame(image: np.ndarray) -> FrameMetrics:
-    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-    edges = cv2.Canny(gray, threshold1=70, threshold2=160)
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional, Tuple
+
 
     edge_density = float(np.mean(edges > 0))
     entropy = compute_entropy(gray)
@@ -37,30 +40,57 @@ def analyze_frame(image: np.ndarray) -> FrameMetrics:
     return FrameMetrics(
         edge_density=edge_density,
         entropy=entropy,
-        contrast=contrast,
+class ImageMetrics:
         artifact_score=artifact_score,
     )
 
 
 def build_overlay(image: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+def init_model_and_data():
+    """Initialize model and dataset if they don't exist."""
+    model_path = Path("models/cybervision_model.joblib")
+    data_path = Path("data/dataset_alt")
+    
+    if not model_path.exists() or not data_path.exists():
+        with st.spinner("Initializing model and dataset..."):
+            try:
+                if not data_path.exists():
+                    from make_alt_dataset import create_dataset
+                    create_dataset("data/dataset_alt", per_class=50)
+                
+                if not model_path.exists():
+                    from train_model import main as train_main
+                    import sys
+                    old_argv = sys.argv
+                    sys.argv = [
+                        "train_model.py",
+                        "--dataset", "data/dataset_alt",
+                        "--model-out", str(model_path),
+                        "--metrics-out", "models/train_metrics.json"
+                    ]
+                    train_main()
+                    sys.argv = old_argv
+            except Exception as e:
+                st.error(f"Error during initialization: {e}")
+
+
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
     edges = cv2.Canny(blur, 60, 150)
     heat = cv2.applyColorMap(edges, cv2.COLORMAP_JET)
     return cv2.addWeighted(image, 0.75, heat[:, :, ::-1], 0.25, 0)
 
 
-def classify_risk(score: float) -> tuple:
+def analyze_image_metrics(image: np.ndarray) -> ImageMetrics:
     if score >= 0.58:
-        return "🔴 CRITIQUE", "#FF1744"
-    if score >= 0.42:
+    edges = cv2.Canny(gray, threshold1=70, threshold2=160)
+    
         return "🟠 MOYEN", "#FFA500"
     return "🟢 BAS", "#4CAF50"
 
-
-@st.cache_resource
-def load_trained_payload(model_path: str):
-    try:
+    artifact_score = 0.45 * edge_density + 0.35 * contrast + 0.20 * min(entropy / 8.0, 1.0)
+    
+    return ImageMetrics(
         return load_model(model_path)
     except Exception:
         return None
@@ -68,7 +98,7 @@ def load_trained_payload(model_path: str):
 
 def render_detection_panel(image: np.ndarray, model_path: str) -> dict:
     """Render detection results in a modern card-style layout."""
-    payload = load_trained_payload(model_path)
+def build_edge_overlay(image: np.ndarray) -> np.ndarray:
     
     metrics = analyze_frame(image)
     risk_label, risk_color = classify_risk(metrics.artifact_score)
@@ -77,194 +107,244 @@ def render_detection_panel(image: np.ndarray, model_path: str) -> dict:
     
     with col1:
         st.markdown(f"""
-        <div style='background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+def load_virus_model(model_path: str):
                     padding: 20px; border-radius: 10px; color: white; text-align: center;'>
             <h3 style='margin: 0; font-size: 14px; opacity: 0.8;'>Densité d'artefacts</h3>
             <h2 style='margin: 10px 0 0 0; font-size: 32px;'>{metrics.edge_density:.1%}</h2>
         </div>
         """, unsafe_allow_html=True)
     
-    with col2:
-        st.markdown(f"""
-        <div style='background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); 
-                    padding: 20px; border-radius: 10px; color: white; text-align: center;'>
-            <h3 style='margin: 0; font-size: 14px; opacity: 0.8;'>Contraste</h3>
-            <h2 style='margin: 10px 0 0 0; font-size: 32px;'>{metrics.contrast:.2f}</h2>
-        </div>
-        """, unsafe_allow_html=True)
+@st.cache_resource
+def load_yolo_model():
+    try:
+        from ultralytics import YOLO
+        return YOLO("yolov8n.pt")
+    except Exception:
+        return None
+
+
+def classify_virus_risk(score: float) -> Tuple[str, str]:
+    if score >= 0.58:
+        return "HIGH", "#CC0000"
+    if score >= 0.42:
+        return "MEDIUM", "#FF6600"
+    return "LOW", "#009900"
+
+
+def detect_objects_yolo(image: np.ndarray) -> dict:
+    """Detect objects in image using YOLO."""
+    yolo = load_yolo_model()
+    if yolo is None:
+        return {"error": "YOLO model not available"}
     
-    with col3:
-        st.markdown(f"""
-        <div style='background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); 
-                    padding: 20px; border-radius: 10px; color: white; text-align: center;'>
-            <h3 style='margin: 0; font-size: 14px; opacity: 0.8;'>Entropie</h3>
-            <h2 style='margin: 10px 0 0 0; font-size: 32px;'>{metrics.entropy:.1f}</h2>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    st.divider()
-    
-    # ML Prediction
-    if payload is not None:
-        predicted_label, confidence = predict_label(payload, image)
-        is_virus = predicted_label == "virus"
-        pred_icon = "⚠️ VIRUS" if is_virus else "✅ SAIN"
-        pred_color = "#FF1744" if is_virus else "#4CAF50"
+    try:
+        results = yolo(image, verbose=False)
+        detections = []
         
-        col_ml, col_risk = st.columns(2)
-        with col_ml:
-            st.markdown(f"""
+        if results and len(results) > 0:
+            boxes = results[0].boxes
+            if boxes is not None:
+                for box in boxes:
+                    cls_id = int(box.cls[0])
+                    conf = float(box.conf[0])
+                    class_name = results[0].names[cls_id]
+                    detections.append({
+                        "class": class_name,
+                        "confidence": conf
+                    })
+        
+        return {
+            "detections": detections,
+            "count": len(detections)
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def render_virus_analysis(image: np.ndarray, model_path: str):
+    """Render virus detection analysis."""
+    st.subheader("Virus Detection Analysis")
+    
+    payload = load_virus_model(model_path)
+    metrics = analyze_image_metrics(image)
+    risk_level, risk_color = classify_virus_risk(metrics.artifact_score)
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Edge Density", f"{metrics.edge_density:.2%}")
+    with col2:
+        st.metric("Entropy", f"{metrics.entropy:.2f}")
+    with col3:
+        st.metric("Contrast", f"{metrics.contrast:.3f}")
             <div style='background: {pred_color}20; border-left: 4px solid {pred_color}; 
                         padding: 15px; border-radius: 5px;'>
-                <h4 style='margin: 0; color: {pred_color};'>{pred_icon}</h4>
-                <p style='margin: 5px 0 0 0; font-size: 12px; color: #666;'>Confiance: {confidence:.1%}</p>
+    col_pred, col_risk = st.columns(2)
+    
             </div>
+        with col_pred:
             """, unsafe_allow_html=True)
-        
-        with col_risk:
+            result_text = "VIRUS DETECTED" if predicted_label == "virus" else "CLEAN IMAGE"
+            result_color = "#CC0000" if predicted_label == "virus" else "#009900"
+            
             st.markdown(f"""
-            <div style='background: {risk_color}20; border-left: 4px solid {risk_color}; 
-                        padding: 15px; border-radius: 5px;'>
-                <h4 style='margin: 0; color: {risk_color};'>{risk_label}</h4>
-                <p style='margin: 5px 0 0 0; font-size: 12px; color: #666;'>Score: {metrics.artifact_score:.2f}</p>
+            <div style='background-color: {result_color}20; border-left: 5px solid {result_color}; 
+                        padding: 15px; border-radius: 5px; margin: 10px 0;'>
+                <h4 style='margin: 0; color: {result_color};'>{result_text}</h4>
+                <p style='margin: 5px 0 0 0; font-size: 13px;'>Confidence: {confidence:.1%}</p>
             </div>
             """, unsafe_allow_html=True)
-    else:
-        st.warning("⚙️ Modèle non disponible - analyse heuristique seulement")
-    
-    return {"metrics": metrics, "risk_label": risk_label}
-
-
-def main() -> None:
-    st.set_page_config(
-        page_title="ImageAnalyzer Pro",
-        layout="wide",
-        initial_sidebar_state="collapsed"
-    )
-    
     # Custom CSS
-    st.markdown("""
+        with col_pred:
+            st.warning("Model not loaded - heuristic analysis only")
+    
+    with col_risk:
+        st.markdown(f"""
+        <div style='background-color: {risk_color}20; border-left: 5px solid {risk_color}; 
+                    padding: 15px; border-radius: 5px; margin: 10px 0;'>
+            <h4 style='margin: 0; color: {risk_color};'>Risk Level: {risk_level}</h4>
+            <p style='margin: 5px 0 0 0; font-size: 13px;'>Artifact Score: {metrics.artifact_score:.2f}</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+
+def render_object_detection(image: np.ndarray):
+    """Render object detection analysis."""
+    st.subheader("Object Detection Analysis")
+    
+    with st.spinner("Analyzing objects..."):
+        result = detect_objects_yolo(image)
+    
+    if "error" in result:
+        st.error(f"Detection error: {result['error']}")
+        return
+    
+    detections = result.get("detections", [])
+    count = result.get("count", 0)
+    
+    st.metric("Objects Detected", count)
+    
+    if detections:
+        st.divider()
+        st.subheader("Detected Objects")
+        
+        df_data = []
+        for det in detections:
+            df_data.append({
+                "Object": det["class"].title(),
+                "Confidence": f"{det['confidence']:.1%}"
+            })
+        
+        df = pd.DataFrame(df_data)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+    else:
+        st.info("No objects detected in this image")
     <style>
-        [data-testid="stSidebarNav"] { display: none; }
         .main { padding-top: 0; }
         h1 { background: linear-gradient(90deg, #667eea 0%, #764ba2 100%); 
              -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
     </style>
     """, unsafe_allow_html=True)
     
-    # Header
+        initial_sidebar_state="collapsed"
     st.markdown("<h1 style='text-align: center; padding: 20px 0;'>🔬 ImageAnalyzer Pro</h1>", 
-                unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #666; margin-top: -10px;'>"
+    
+    init_model_and_data()
+    
                 "Détection avancée d'anomalies visuelles par IA</p>", unsafe_allow_html=True)
     
-    st.divider()
+        .title { text-align: center; padding: 20px 0; }
+        h1 { color: #1a1a1a; font-weight: 600; }
+        .subtitle { text-align: center; color: #666; margin-top: -15px; font-size: 14px; }
     
-    # Main layout with tabs
-    tab1, tab2, tab3 = st.tabs(["📤 Analyse", "📊 Détails", "⚙️ Configuration"])
+    with tab1:
+    
+    st.markdown("<div class='title'><h1>ImageAnalyzer Pro</h1></div>", 
+            label_visibility="collapsed"
+    st.markdown("<p class='subtitle'>Advanced Image Analysis Platform</p>", unsafe_allow_html=True)
+    
+    col_spacer1, col_mode, col_spacer2 = st.columns([1, 2, 1])
+    with col_mode:
+        analysis_mode = st.radio(
+            "Select Analysis Mode",
+            ["Virus Detection", "Object Recognition"],
+            horizontal=True,
+            label_visibility="collapsed"
+        )
+    
+            pil_img = Image.open(io.BytesIO(uploaded.read())).convert("RGB")
+    
+    tab1, tab2 = st.tabs(["Analysis", "Details"])
     
     with tab1:
         uploaded = st.file_uploader(
-            "Déposez votre image ici",
+            "Upload Image (PNG, JPG, JPEG)",
             type=["png", "jpg", "jpeg"],
             label_visibility="collapsed"
         )
         
-        if uploaded:
-            pil_img = Image.open(io.BytesIO(uploaded.read())).convert("RGB")
-            image = np.array(pil_img)
-            
-            # Display images
-            col_img1, col_img2 = st.columns(2)
-            with col_img1:
-                st.markdown("<h3 style='text-align: center;'>📸 Image source</h3>", 
-                           unsafe_allow_html=True)
-                st.image(image, use_column_width=True, clamp=True)
-            
-            with col_img2:
-                st.markdown("<h3 style='text-align: center;'>🌡️ Heatmap</h3>", 
                            unsafe_allow_html=True)
                 overlay = build_overlay(image)
                 st.image(overlay, use_column_width=True, clamp=True)
             
-            st.divider()
             
             # Detection panel
-            model_path = "models/cybervision_model.joblib"
-            render_detection_panel(image, model_path)
+                st.subheader("Original Image")
         else:
-            st.info("📂 Chargez une image PNG ou JPG pour commencer l'analyse")
+            
     
-    with tab2:
-        if uploaded:
-            pil_img = Image.open(io.BytesIO(uploaded.read())).convert("RGB")
+                st.subheader("Edge Detection")
+                overlay = build_edge_overlay(image)
             image = np.array(pil_img)
             
             st.markdown("<h3>Statistiques détaillées</h3>", unsafe_allow_html=True)
             
-            metrics = analyze_frame(image)
-            extracted = extract_metrics(image)
-            
+            if analysis_mode == "Virus Detection":
+                model_path = "models/cybervision_model.joblib"
+                render_virus_analysis(image, model_path)
+            else:
+                render_object_detection(image)
             detail_cols = st.columns(2)
-            with detail_cols[0]:
-                st.markdown("""
+            st.info("Upload an image to begin analysis")
+    
                 **Métriques structurelles:**
                 - Edge Density: """ + f"{metrics.edge_density:.4f}" + """
                 - Entropy: """ + f"{metrics.entropy:.4f}" + """
                 - Contrast: """ + f"{metrics.contrast:.4f}" + """
-                """)
             
-            with detail_cols[1]:
-                st.markdown("""
+            st.subheader("Image Information")
+            
+            col_info1, col_info2 = st.columns(2)
+            with col_info1:
+                st.metric("Resolution", f"{image.shape[1]} x {image.shape[0]}")
+                st.metric("Format", "RGB")
+            with col_info2:
+                st.metric("File Size", f"{len(uploaded.getvalue()) / 1024:.1f} KB")
+                st.metric("Channels", "3")
+            
+            st.divider()
+            st.subheader("Detailed Metrics")
+            
+            metrics = analyze_image_metrics(image)
                 **Métriques couleur:**
-                - Saturation: """ + f"{extracted.saturation_mean:.4f}" + """
-                - Luminosité: """ + f"{extracted.brightness_mean:.4f}" + """
-                - Densité d'artefacts: """ + f"{metrics.artifact_score:.4f}" + """
-                """)
             
-            # Top zones
-            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-            edges = cv2.Canny(gray, 70, 160)
-            h, w = edges.shape
-            patch = max(16, min(h, w) // 12)
+            metric_data = {
+                "Metric": [
+                    "Edge Density",
+                    "Entropy",
+                    "Contrast",
+                    "Saturation",
+                    "Brightness",
+                    "Artifact Score"
+                ],
+                "Value": [
+                    f"{metrics.edge_density:.4f}",
+                    f"{metrics.entropy:.4f}",
+                    f"{metrics.contrast:.4f}",
+                    f"{extracted.saturation_mean:.4f}",
+                    f"{extracted.brightness_mean:.4f}",
+                    f"{metrics.artifact_score:.4f}"
+                ]
+            }
             
-            rows = []
-            for y in range(0, h - patch + 1, patch):
-                for x in range(0, w - patch + 1, patch):
-                    window = edges[y : y + patch, x : x + patch]
-                    density = float(np.mean(window > 0))
-                    rows.append({"x": x, "y": y, "densité": density})
-            
-            df = pd.DataFrame(rows).sort_values("densité", ascending=False).head(15)
-            st.markdown("**🎯 Top 15 zones suspectes:**")
-            st.dataframe(df, use_container_width=True, hide_index=True)
-        else:
-            st.info("Chargez une image dans l'onglet Analyse pour voir les détails")
-    
-    with tab3:
-        st.markdown("<h3>Paramètres d'analyse</h3>", unsafe_allow_html=True)
-        
-        col_config1, col_config2 = st.columns(2)
-        with col_config1:
-            model_path = st.text_input(
-                "Chemin du modèle ML",
-                value="models/cybervision_model.joblib"
-            )
+            df = pd.DataFrame(metric_data)
         
         with col_config2:
-            threshold = st.slider(
-                "Seuil de risque (Critique)",
-                min_value=0.4,
-                max_value=0.8,
-                value=0.58,
-                step=0.01
-            )
-        
-        st.info(
-            "💡 **Conseil**: Entraînez d'abord le modèle avec `python train_model.py` "
-            "avant d'utiliser cette application."
-        )
-
-
-if __name__ == "__main__":
-    main()
