@@ -73,13 +73,5 @@ Generation demo:
 - `Verdict heuristique`: niveau de risque visuel (faible/modere/eleve).
 - `Top zones inspectables`: patches avec forte densite de contours.
 
-## Deploiement Streamlit Cloud
 
-Voir le guide:
-- `DEPLOY_STREAMLIT.md`
-
-## Limites
-
-- Dataset demo synthetique: utile pour workflow, pas pour validation industrielle.
-- Le modele doit etre re-entraine avec donnees reelles pour usage production.
 
